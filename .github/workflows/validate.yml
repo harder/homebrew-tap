@@ -1,0 +1,35 @@
+name: Validate formula
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  skillview:
+    name: SkillView (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    steps:
+      - name: Set up Homebrew and check out tap
+        uses: Homebrew/actions/setup-homebrew@848c272c7bfe984a197bd4d16383f4c106ec61e6 # 2026.09.21.1
+        with:
+          core: true
+      - name: Audit, install, and test SkillView
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew tap harder/tap "$GITHUB_WORKSPACE"
+          brew audit harder/tap/skillview
+          brew install harder/tap/skillview
+          brew test harder/tap/skillview
+          skillview --version
+          skillview --help
