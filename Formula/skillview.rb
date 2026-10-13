@@ -1,7 +1,6 @@
 class Skillview < Formula
   desc "Terminal UI and CLI for browsing and managing GitHub CLI skills"
   homepage "https://skillview.dev/"
-  version "1.0.0"
   license "MIT"
 
   depends_on "gh"
