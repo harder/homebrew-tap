@@ -27,11 +27,6 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          brew tap harder/tap
-          tap_dir="$(brew --repository harder/tap)"
-          if [ "$tap_dir" != "$GITHUB_WORKSPACE" ]; then
-            cp "$GITHUB_WORKSPACE/Formula/skillview.rb" "$tap_dir/Formula/skillview.rb"
-          fi
           brew audit harder/tap/skillview
           brew install harder/tap/skillview
           brew test harder/tap/skillview
