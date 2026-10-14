@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      auto_merge_pr:
+        description: 'Automation PR number to merge after both platform checks pass'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -32,3 +37,34 @@ jobs:
           brew test harder/tap/skillview
           skillview --version
           skillview --help
+
+  merge-validated-update:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.auto_merge_pr != '' }}
+    needs: skillview
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge only the validated formula update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.auto_merge_pr }}
+          VALIDATED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          pr=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json state,baseRefName,headRefName,headRefOid,isCrossRepository,author)
+          test "$(jq -r '.state' <<< "$pr")" = OPEN
+          test "$(jq -r '.baseRefName' <<< "$pr")" = main
+          test "$(jq -r '.isCrossRepository' <<< "$pr")" = false
+          test "$(jq -r '.headRefOid' <<< "$pr")" = "$VALIDATED_SHA"
+          [[ "$(jq -r '.headRefName' <<< "$pr")" =~ ^automation/skillview-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          author=$(jq -r '.author.login' <<< "$pr")
+          [[ "$author" == "app/github-actions" || "$author" == "github-actions[bot]" ]]
+          files=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json files --jq '.files[].path')
+          test "$files" = Formula/skillview.rb
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch --match-head-commit "$VALIDATED_SHA"

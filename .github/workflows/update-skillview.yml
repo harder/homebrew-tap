@@ -1,0 +1,111 @@
+name: Update SkillView formula
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: update-skillview
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: true
+
+      - name: Find newest stable SkillView release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api repos/harder/gh-skillview/releases/latest --jq '.tag_name')
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Unexpected latest release tag: $tag" >&2
+            exit 1
+          }
+          current=$(sed -nE 's#.*releases/download/(v[0-9]+\.[0-9]+\.[0-9]+)/skillview-darwin-arm64.*#\1#p' Formula/skillview.rb)
+          test -n "$current"
+          if ! python3 - "$current" "$tag" <<'PY'
+          import sys
+          old, new = [tuple(map(int, tag[1:].split("."))) for tag in sys.argv[1:]]
+          sys.exit(0 if new > old else 1)
+          PY
+          then
+            echo "No newer stable release than $current"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "new=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download tagged renderer and published assets
+        if: steps.release.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p source artifacts generated
+          base="https://raw.githubusercontent.com/harder/gh-skillview/$RELEASE_TAG/packaging/homebrew"
+          curl --fail --location --silent --show-error "$base/render_formula.py" -o source/render_formula.py
+          curl --fail --location --silent --show-error "$base/skillview.rb.tmpl" -o source/skillview.rb.tmpl
+          gh release download "$RELEASE_TAG" --repo harder/gh-skillview --dir artifacts \
+            --pattern skillview-darwin-arm64 \
+            --pattern skillview-linux-amd64 \
+            --pattern SHA256SUMS-darwin-arm64.txt \
+            --pattern SHA256SUMS-linux-amd64.txt
+          python3 source/render_formula.py \
+            --tag "$RELEASE_TAG" --assets-dir artifacts \
+            --output generated/skillview.rb
+
+      - name: Open or refresh formula PR and run validation
+        if: steps.release.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          branch="automation/skillview-$RELEASE_TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+            existing_pr=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+            if [[ -n "$existing_pr" ]] && git show "origin/$branch:Formula/skillview.rb" | cmp -s - generated/skillview.rb; then
+              echo "Formula PR #$existing_pr already contains $RELEASE_TAG"
+              exit 0
+            fi
+            git switch -c "$branch" "origin/$branch"
+            git reset --hard origin/main
+          else
+            git switch -c "$branch"
+          fi
+          cp generated/skillview.rb Formula/skillview.rb
+          if git diff --quiet -- Formula/skillview.rb; then
+            echo "Tap formula already matches $RELEASE_TAG"
+            exit 0
+          fi
+          git add Formula/skillview.rb
+          git commit -m "Update SkillView to ${RELEASE_TAG#v}"
+          git push --force-with-lease origin "HEAD:refs/heads/$branch"
+
+          pr=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          if [[ -z "$pr" ]]; then
+            gh pr create --head "$branch" --base main \
+              --title "Update SkillView to ${RELEASE_TAG#v}" \
+              --body "Update the Homebrew formula from the published [SkillView $RELEASE_TAG](https://github.com/harder/gh-skillview/releases/tag/$RELEASE_TAG) binaries and verified SHA-256 checksums. The tap validation workflow tests installation on macOS ARM64 and Linux x64 before merging."
+            pr=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          fi
+          test -n "$pr"
+          gh workflow run validate.yml --ref "$branch" -f auto_merge_pr="$pr"
