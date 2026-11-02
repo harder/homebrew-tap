@@ -2,7 +2,7 @@ name: Update SkillView formula
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 8 * * *'
   workflow_dispatch:
 
 permissions:
